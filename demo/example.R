@@ -27,11 +27,13 @@ bst <- xgboost(data = train,
 
 
 bst.tree <- xgb.model.dt.tree(model=bst)
+bst.conditions <- treeConditions(bst.tree)
 
 time <- Sys.time()
 test <- treeConditions(bst.tree)
 print(Sys.time() - time)
 
-time <- Sys.time()
+Rprof('D:/GitHub/xgboost-table/test_treeConditions.out', line.profiling=TRUE)
 test2 <- treeConditions(bst.tree)
-print(Sys.time() - time)
+Rprof(NULL)
+summaryRprof('D:/GitHub/xgboost-table/test_treeConditions.out', lines='show')

@@ -19,14 +19,20 @@
 #'
 #' @export
 treeConditions <- function(in.tree, split.digits = 11){
+  # Prepare tree - convert Yes, No and Missing to integers
+  tree <- copy(in.tree)
+  if (tree[, class(Yes)] == 'character') tree[, Yes := as.numeric(gsub('(^.*\\-)(.*$)','\\2',Yes))]
+  if (tree[, class(No)] == 'character') tree[, No := as.numeric(gsub('(^.*\\-)(.*$)','\\2',No))]
+  if (tree[, class(Missing)] == 'character') tree[, Missing := as.numeric(gsub('(^.*\\-)(.*$)','\\2',Missing))]
+  trees_index <- tree[, unique(Tree)]
+
   # Initialise aggregate conditions list
   con.aggregate <- list()
+  length(con.aggregate) <- length(trees_index)
 
   # Loop across each tree and combine conditions with aggregate list
-  for (i in in.tree[, unique(Tree)]){
-    con.current <- treeConditionsOne(in.tree[Tree == i])  # conditions from a single tree
-    con.aggregate <- c(con.aggregate, con.current)  # append to aggregate list
-  }
+  for (i in 1:length(trees_index)) con.aggregate[[i]] <- treeConditionsOne(tree[Tree == trees_index[i]])
+  con.aggregate <- unlist(con.aggregate, recursive=F, use.names=F)
 
   # Store conditions in a data.table
   con.aggregate_tables <- lapply(con.aggregate, function(x){
@@ -58,125 +64,103 @@ treeConditions <- function(in.tree, split.digits = 11){
   return(out)
 }
 
+
 #
 # Extract the conditions of a single tree
-# Calls treeConditionsOneRecursive with memoisation layer
 #
 # @param single.tree Table of a single tree from an XGBoost model
+#
 treeConditionsOne <- function(single.tree){
 
-  # Create memoisation function - treeConditionsOneRecursive
-  #treeConditionsOneRecursive <- memoise::memoise(treeConditionsOneRecursive, envir=environment())
+  # Sort tree by node for faster processing
+  setorderv(single.tree, 'Node')
 
-  # Get the tree index from input table
-  tree.index <- single.tree[, unique(Tree)]
-  if (length(tree.index) != 1) stop('Input single.tree should only contain data for one tree.')
+  # Start from node 0 and loop until there are no nodes to process
+  tree.conditions <- list()  # list to store processed conditions
+  tree.process <- list(list('current.node' = 0,  # current node to process
+                            'current.conditions' = list()))  # list of prior conditions
 
-  # Call recursive function to extract conditions
-  tree.recursive <- treeConditionsOneRecursive(single.tree, paste0(tree.index,'-0'))
+  while(length(tree.process) > 0){
+    tree.next_process <- list()  # staging list to store next nodes to process
 
-  # Process list of conditions - extract from list of lists and store them in a single list
-  tree.conditions <- list()
-  while(length(tree.recursive) > 0){
-    # Check if conditions exist in current layer
-    mask <- sapply(tree.recursive, function(x) !is.null(x$value))
+    for (i in 1:length(tree.process)){  # loop across all the current nodes to process
+      # Gather current node details
+      node.id <- tree.process[[i]]$current.node
+      node.conditions <- tree.process[[i]]$current.conditions
+      node.split <- single.tree[['Split']][node.id + 1]
+      node.feature <- single.tree[['Feature']][node.id + 1]
 
-    # If conditions exist, add them to output and remove them from current list
-    if (any(mask)){
-      tree.conditions <- c(tree.conditions, tree.recursive[mask])
-      tree.recursive[mask] <- NULL
+      # Wrap up if a leaf node is reached
+      if (is.na(node.split)){
+        tree.conditions[[length(tree.conditions) + 1]] <- list('conditions' = node.conditions, 'value' = single.tree[['Quality']][node.id + 1])
+        next  # no further processing required
+      }
 
-    # If no conditions, unlist and go to next layer
-    } else {
-      tree.recursive <- unlist(tree.recursive, use.names=FALSE, recursive=FALSE)
-    }
+      # Check if feature exists in prior conditions
+      feature.exists <- FALSE
+      if (length(node.conditions) > 0){
+        feature.mask <- sapply(node.conditions, function(x) x$feature == node.feature)
+        if (any(feature.mask)) feature.exists <- TRUE
+      }
+
+      # Branch out to next nodes to process - Yes, No and Missing
+      nnext.process <- lapply(c('Yes','No','Missing'), function(x){
+        nnext.conditions <- copy(node.conditions)  # initialise next conditions list
+
+        # If feature does not exist in prior conditions, add new list to conditions
+        if (!feature.exists){
+          if (x == 'Yes'){
+            nnext.conditions[[length(nnext.conditions) + 1]] <- list('feature'=node.feature, 'lower_bound'=-Inf, 'upper_bound'=node.split)
+          } else if (x == 'No'){
+            nnext.conditions[[length(nnext.conditions) + 1]] <- list('feature'=node.feature, 'lower_bound'=node.split, 'upper_bound'=Inf)
+          } else {
+            nnext.conditions[[length(nnext.conditions) + 1]] <- list('feature'=node.feature, 'lower_bound'=as.numeric(NA), 'upper_bound'=as.numeric(NA))
+          }
+
+        # If feature exists in prior conditions, combine with new conditions
+        } else {
+          feature.conditions <- nnext.conditions[feature.mask][[1]]  # current conditions
+          if (x == 'Yes'){
+            feature.conditions[['upper_bound']] <- min(feature.conditions$upper_bound, node.split, na.rm=FALSE)
+            nnext.conditions[feature.mask][[1]] <- feature.conditions  # update conditions
+          } else if (x == 'No'){
+            feature.conditions[['lower_bound']] <- max(feature.conditions$lower_bound, node.split, na.rm=FALSE)
+            nnext.conditions[feature.mask][[1]] <- feature.conditions  # update conditions
+          } else if (x == 'Missing'){
+            # Only continue missing if previous values were missing
+            if (!is.na(feature.conditions$lower_bound)) return(NULL)
+          }
+        }
+        out <- list('current.node' = single.tree[[x]][node.id + 1], 'current.conditions' = nnext.conditions)
+        return(out)
+      })  # end branch out
+
+      # Remove NULLs (missing from non-missing) and other paths that will not be reached
+      nnext.process <- nnext.process[sapply(nnext.process, function(x) !is.null(x))]
+
+      temp.remove <- numeric(0)  # initialise vector of indicies to remove
+      for (j in 1:length(nnext.process)){
+        temp.test <- sapply(nnext.process[[j]]$current.conditions, function(x){
+          temp <- FALSE
+          if (!is.na(x$lower_bound)) if (x$lower_bound >= x$upper_bound) temp <- TRUE
+          return(temp)
+        })
+        if (any(temp.test)) temp.remove <- c(temp.remove, j)
+      }
+      nnext.process[temp.remove] <- NULL
+
+      # Update staging list
+      tree.next_process <- c(tree.next_process, nnext.process)
+    }  # end for loop across all current nodes to process
+
+    # Update list to process
+    tree.process <- copy(tree.next_process)
   }
-
-  # Remove NULLs
-  tree.conditions <- tree.conditions[sapply(tree.conditions, function(x) !is.null(x))]
-
-  # Remove other paths that wont be reached
-  temp.remove <- numeric(0)
-  for (i in 1:length(tree.conditions)){
-    temp.test <- sapply(tree.conditions[[i]]$conditions, function(x){
-      temp <- FALSE
-      if (!is.na(x$lower_bound)) if(x$lower_bound >= x$upper_bound) temp <- TRUE
-      return(temp)
-    })
-    if (any(temp.test)) temp.remove <- c(temp.remove, i)
-  }
-  tree.conditions[temp.test] <- NULL
 
   # Sort feature conditions in the order of their features names
   for (i in 1:length(tree.conditions)){
     tree.features <- sapply(tree.conditions[[i]]$conditions, function(x) x$feature)
     tree.conditions[[i]]$conditions <- tree.conditions[[i]]$conditions[order(tree.features)]
   }
-  return(tree.conditions)
-}
-
-#
-# Recursive function to extract the conditions of a single tree
-#
-# @param single.tree Table of a single tree from an XGBoost model
-# @param current.id ID of the node to start processing
-# @param current.list Current list of prior conditions
-treeConditionsOneRecursive <- function(single.tree, current.id, current.list = NULL){
-  if (is.null(current.list)) current.list <- list()  # initialise current list of conditions
-
-  # Wrap up if a leaf is reached
-  if (is.na(single.tree[ID == current.id, Split])){
-    out <- list('conditions' = current.list,
-                'value' = single.tree[ID == current.id, Quality])
-    return(out)
-  }
-
-  # Process split nodes
-  node.split <- single.tree[ID == current.id, Split]
-  node.feature <- single.tree[ID == current.id, Feature]
-
-  # Check if current feature already exists in prior conditions
-  feature.exists <- FALSE
-  if (length(current.list) > 0){
-    feature.mask <- sapply(current.list, function(x) x$feature == node.feature)
-    if (any(feature.mask)) feature.exists <- TRUE
-  }
-
-  # Branch out to Yes, No and Missing
-  out <- lapply(c('Yes','No','Missing'), function(x){
-    # If feature does not exist in prior conditions, add new list to conditions
-    if (!feature.exists){
-      if (x == 'Yes'){
-        current.list[[length(current.list) + 1]] <- list('feature' = node.feature,
-                                                         'lower_bound' = -Inf,
-                                                         'upper_bound' = node.split)
-      } else if (x == 'No'){
-        current.list[[length(current.list) + 1]] <- list('feature' = node.feature,
-                                                         'lower_bound' = node.split,
-                                                         'upper_bound' = Inf)
-      } else {
-        current.list[[length(current.list) + 1]] <- list('feature' = node.feature,
-                                                         'lower_bound' = as.numeric(NA),
-                                                         'upper_bound' = as.numeric(NA))
-      }
-
-    # If feature exists in prior conditions, combine with new conditions
-    } else {
-      feature.conditions <- current.list[feature.mask][[1]]  # current conditions
-      if (x == 'Yes'){
-        feature.conditions[['upper_bound']] <- min(feature.conditions$upper_bound, node.split, na.rm=F)
-        current.list[feature.mask][[1]] <- feature.conditions  # update conditions
-      } else if (x == 'No'){
-        feature.conditions[['lower_bound']] <- max(feature.conditions$lower_bound, node.split, na.rm=F)
-        current.list[feature.mask][[1]] <- feature.conditions  # update conditions
-      } else if (x == 'Missing'){
-        # Only continue missing if previous values were missing
-        if (!is.na(feature.conditions$lower_bound) | !is.na(feature.conditions$upper_bound)) return(NULL)
-      }
-    }
-
-    # Send for recursive processing
-    return(treeConditionsOneRecursive(single.tree, single.tree[ID == current.id, get(x)], current.list))
-  })  # end lapply: Yes, No, Missing split
-  return(out)
+  return(tree.conditions)  # return list of conditions
 }
