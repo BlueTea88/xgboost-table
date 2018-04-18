@@ -37,6 +37,7 @@ treeConditions <- function(in.tree, split.digits = 11){
   # Store conditions in a data.table
   con.aggregate_tables <- lapply(con.aggregate, function(x){
     con.table <- list(value = x$value)
+    con.table[['parameter']] <- paste(sapply(x$conditions, function(x) x$feature), collapse='*')
     if (length(x$conditions) > 0){
       for (i in 1:length(x$conditions)){
         names(x$conditions[[i]]) <- paste0(names(x$conditions[[i]]),'_',i)
@@ -58,7 +59,7 @@ treeConditions <- function(in.tree, split.digits = 11){
   }
 
   # Aggregate values for the same condition
-  by_columns <- 'nfeatures'
+  by_columns <- c('nfeatures','parameter')
   for (i in 1:con.max_features) by_columns <- c(by_columns, paste0(c('feature_','lower_bound_','upper_bound_'),i))
   out <- out[, .(value = sum(value)), by=by_columns]
   return(out)

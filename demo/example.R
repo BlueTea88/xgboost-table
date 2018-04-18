@@ -25,9 +25,13 @@ bst <- xgboost(data = train,
                eta = 0.1,
                nrounds = 2000)
 
-
+# Extract tree conditions
 bst.tree <- xgb.model.dt.tree(model=bst)
 bst.conditions <- treeConditions(bst.tree)
+
+# Test lower order parameters
+in.conditions <- copy(bst.conditions)
+in.data <- copy(x)
 
 time <- Sys.time()
 test <- treeConditions(bst.tree)
