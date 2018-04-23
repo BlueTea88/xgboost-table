@@ -18,6 +18,9 @@
 inferLowerEffects <- (in.conditions, in.data, in.weights = NULL){
   # Set weights to 1 if unspecified
   if (is.null(in.weights)) in.weights <- rep(1, nrow(in.data))
+  
+  # Check length of weights is equal to number of rows
+  if (length(in.weights) != nrow(in.data)) stop('Length of in.weights does not match nrow(in.data).')
 
   # Max interaction dimension
   nmax <- in.conditions[, max(nfeatures)]
@@ -63,7 +66,10 @@ inferLowerEffects <- (in.conditions, in.data, in.weights = NULL){
         setnames(temp, paste0('upper_bound_',leftover), paste0('upper_bound_',1:xint.dim))
       }
       temp[, nfeatures := xint.dim]
-      temp[, parameter := do.call(paste, c(.SD, collapse='*')), .SDcols=paste0('feature_',1:xint.dim)]
+      temp.features <- lapply(1:xint.dim, function(i) temp[[paste0('feature_',i)]])
+      temp.features <- lapply(1:nrow(temp), function(i) sapply(temp.features, function(x) x[i]))
+      temp.parameters <- sapply(temp.features, function(x) paste(x, collapse='*'))
+      temp[, parameter := temp.parameters]
       return(temp)
     })
     
@@ -76,61 +82,38 @@ inferLowerEffects <- (in.conditions, in.data, in.weights = NULL){
   setkey(out, NULL)
   out <- unique(out)  # remove duplicates
   
-  
-  # Extract fitted split points for each interaction and each feature
-  xint.conditions <- split(in.conditions, by='parameter')  # split conditions table by parameter
-  for (i in 1:length(int.fitted)){
-    xint.parameter <-int.fitted_parameter[i]
-    xint.nfeatures <- length(int.fitted[[i]])
-    xint.splits <- list()
-    if (xint.nfeatures > 1) xint.splits <- lapply(1:xint.nfeatures, function(j){
-      splits <- xint.conditions[[xint.parameter]][, paste0(c('lower_bound_','upper_bound_'),j), with=FALSE]
-      splits <- sort(unique(unlist(splits, use.names=FALSE)), na.last=NA)
-      return(splits)
-    })
-    
-    xint.conditions[[xint.parameter]][]
+  # Create formula
+  for (i in 1:nmax){
+    out[nfeatures >= i & is.na(get(paste0('lower_bound_',i))),
+        (paste0('formula_lower_',i)) := paste0('(is.na(',get(paste0('feature_',i)),'))')]
+    out[nfeatures >= i & !is.na(get(paste0('lower_bound_',i))) & !is.infinite(get(paste0('lower_bound_',i))),
+        (paste0('formula_lower_',i)) := paste0('(',get(paste0('feature_',i)),' >= ',get(paste0('lower_bound_',i)),')')]
+    out[nfeatures >= i & !is.na(get(paste0('upper_bound_',i))) & !is.infinite(get(paste0('upper_bound_',i))),
+        (paste0('formula_upper_',i)) := paste0('(',get(paste0('feature_',i)),' < ',get(paste0('upper_bound_',i)),')')]
   }
+  int.formula <- c(lapply(1:nmax, function(i) out[[paste0('formula_lower_',i)]]),
+                   lapply(1:nmax, function(i) out[[paste0('formula_upper_',i)]]))
+  out[, c(paste0('formula_lower_',1:nmax),paste0('formula_upper_',1:nmax)) := NULL]
+  int.formula <- lapply(1:nrow(out), function(i) sapply(int.formula, function(x) x[i]))
+  int.formula <- lapply(int.formula, function(x) x[!is.na(x)])
+  out[, formula := sapply(int.formula, paste, collapse=' * ')]
   
-  for (int in int.fitted){
-    
-    
-    
+  # Attach exposure
+  temp.weights <- rep(0, nrow(out))
+  temp.formula <- out[, formula]
+  for (i in 1:nrow(out)){
+    xint.formula <- temp.formula[i]
+    xint.mask <- with(in.data, eval(parse(text=xint.formula)))
+    temp.weights[i] <- sum(in.weights*xint.mask, na.rm=T)
   }
+  out[, exposure := temp.weights/sum(in.weights)]
   
-  # Extract splits - highest dimension to lowest
-  for (i in nmax:1){
-    
-    
-    
-  }
+  #Rprof('D:/GitHub/xgboost-table/test.out', line.profiling=TRUE)
+  #source('D:/GitHub/xgboost-table/test.R')
+  #Rprof(NULL)
+  #summaryRprof('D:/GitHub/xgboost-table/test.out', lines='show')
   
-  # Build comprehensive table of conditions
-  # Lower order effects should have all splits in their corresponding higher order effects
-  for (int in int.all){
-    xint.mask <- sapply(int.index, function(x) all(int %in% x))  # rows that are related
-    xint.rows <- in.conditions[xint.mask]
-    
-    xint.splits <- list()  # initialise splits
-    for (x in int){
-      xint.index <- sapply(int.index[int.mask], function(y) which(y == x))  # feature index per row
-      xint.splits[[x]] <- unlist(lapply(1:length(xint.index), function(i){
-        return(unlist(xint.rows[i, paste0(c('lower_bound_','upper_bound_'),xint.index[i]), with=F], use.names=F))
-      }), use.names=F)
-      
-      )
-      
-      
-      sapply(x.index)
-    }
-    
-    
-    int.conditions <- in.conditions[sapply(int.index, function(x) all(int %in% x))]
-    int.index
-    
-  }
+  # Normalise table
   
-  in.conditions[,]
-
 
 }
