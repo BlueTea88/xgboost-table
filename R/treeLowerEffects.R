@@ -1,5 +1,5 @@
 #'
-#' Infer Lower Effects
+#' Tree Lower Effects
 #'
 #' Infer lower order effects from extracted tree conditions.
 #'
@@ -15,7 +15,7 @@
 #' The distribution of features is obtained \code{in.data} and \code{in.weights}.
 #'
 #' @export
-inferLowerEffects <- (in.conditions, in.data, in.weights = NULL){
+treeLowerEffects <- (in.conditions, in.data, in.weights = NULL){
   # Set weights to 1 if unspecified
   if (is.null(in.weights)) in.weights <- rep(1, nrow(in.data))
   
@@ -33,6 +33,7 @@ inferLowerEffects <- (in.conditions, in.data, in.weights = NULL){
   })
   int.fitted <- unique(int.index)
   int.fitted_parameters <- sapply(int.fitted, paste, collapse='*')
+  int.features <- sort(unique(unlist(int.fitted, use.names=F)))
 
   # Pad out lower order interactions
   int.all <- int.fitted
@@ -77,10 +78,47 @@ inferLowerEffects <- (in.conditions, in.data, in.weights = NULL){
     xint.conditions[[xint.dim]] <- rbindlist(c(list(xint.conditions[[xint.dim]]),temp.conditions), 
                                              use.names=TRUE, fill=TRUE)
   }
-  out <- rbindlist(xint.conditions, use.names=TRUE, fill=TRUE)  # aggregate all conditions
-  out[, value:=NULL]  # remove value - will be recalculated later
-  setkey(out, NULL)
-  out <- unique(out)  # remove duplicates
+  int.conditions <- rbindlist(xint.conditions, use.names=TRUE, fill=TRUE)  # aggregate all conditions
+  int.conditions[, value:=NULL]  # remove value - will be recalculated later
+  
+  # Build a comprehensive list of splits at the parameter level
+  temp.dt <- list()
+  length(temp.dt) <- length(int.all)
+  
+  for (i in 1:length(int.all)){
+    temp.subset <- int.conditions[parameter == int.all_parameters[[i]]]
+    
+    for (j in 1:length(int.all[[i]])){
+      temp.splits <- unique(c(temp.subset[[paste0('lower_bound_',j)]],temp.subset[[paste0('upper_bound_',j)]]))
+      temp.splits <- sort(unique(c(-Inf,temp.splits,Inf)), na.last=NA)  # removes NA as well
+      temp.lower_bound <- c(temp.splits[1:(length(temp.splits)-1)], NA)
+      temp.upper_bound <- c(temp.splits[2:length(temp.splits)], NA)
+      temp.table <- data.table(int.all[[i]][j], temp.lower_bound, temp.upper_bound, 1)
+      colnames(temp.table) <- c(paste0(c('feature_','lower_bound_','upper_bound_'),j),'key')
+      if (j == 1) temp.dt[[i]] <- copy(temp.table) else temp.dt[[i]] <- merge(temp.dt[[i]], temp.table, by='key', allow.cartesian=TRUE)
+    }
+    temp.dt[[i]][, `:=`(nfeatures = length(int.all[[i]]), parameter = int.all_parameters[[i]], key = NULL)]
+  }
+  out <- rbindlist(temp.dt, use.names=TRUE, fill=TRUE)
+  
+  # Apply values to new conditions
+  temp.values <- rep(0, nrow(out))  # initialise values to 0
+  
+  for (i in 1:nrow(in.conditions)){
+    temp.nfeatures <- in.conditions[['nfeatures']][i]
+    temp.value <- in.conditions[['value']][i]
+    temp.formula <- paste0('(parameter == "', in.conditions[['parameter']][i],'")')
+    
+    # TODO: add support for intercept
+    for (j in 1:temp.nfeatures){
+      temp.formula <- paste0(temp.formula,' * (lower_bound_',j,' >= ',in.conditions[[paste0('lower_bound_',j)]][i],')')
+      temp.formula <- paste0(temp.formula,' * (upper_bound_',j,' <= ',in.conditions[[paste0('upper_bound_',j)]][i],')')
+    }
+    
+    # Identify new conditions that are affected and apply values
+    idx <- with(out, eval(parse(text=temp.formula)))
+    temp.values[idx] <- temp.values[idx] + temp.value
+  }
   
   # Create formula
   for (i in 1:nmax){
@@ -99,19 +137,25 @@ inferLowerEffects <- (in.conditions, in.data, in.weights = NULL){
   out[, formula := sapply(int.formula, paste, collapse=' * ')]
   
   # Attach exposure
-  temp.weights <- rep(0, nrow(out))
-  temp.formula <- out[, formula]
-  for (i in 1:nrow(out)){
-    xint.formula <- temp.formula[i]
-    xint.mask <- with(in.data, eval(parse(text=xint.formula)))
-    temp.weights[i] <- sum(in.weights*xint.mask, na.rm=T)
-  }
-  out[, exposure := temp.weights/sum(in.weights)]
+  exp.weights <- rep(0, nrow(out))
+  exp.formula <- out[, formula]
+  exp.index <- 1:nrow(out)
   
-  #Rprof('D:/GitHub/xgboost-table/test.out', line.profiling=TRUE)
-  #source('D:/GitHub/xgboost-table/test.R')
-  #Rprof(NULL)
-  #summaryRprof('D:/GitHub/xgboost-table/test.out', lines='show')
+  # Check missing conditions and skip processing if there are no missing values (automatically set exposure to 0)
+  exp.skip_index <- numeric(0)
+  for (x in int.features){
+    temp <- with(in.data, eval(parse(text=paste0('any(is.na(',x,'))'))))
+    if (!temp) exp.skip_index <- unique(c(exp.skip_index,grep(paste0('is.na(',x,')'), exp.formula, fixed=T))) 
+  }
+  exp.index <- base::setdiff(exp.index, exp.skip_index)
+  
+  # Loop across conditions and attach exposure for each condition
+  for (i in exp.index){
+    xint.formula <- exp.formula[i]
+    xint.mask <- with(in.data, eval(parse(text=xint.formula)))
+    exp.weights[i] <- sum(in.weights*xint.mask, na.rm=T)
+  }
+  out[, exposure := exp.weights/sum(in.weights)]
   
   # Normalise table
   
