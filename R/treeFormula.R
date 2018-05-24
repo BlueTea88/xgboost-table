@@ -16,45 +16,57 @@
 treeFormula <- function(in.conditions){
   # Create formula
   out <- copy(in.conditions)
+  all.nfeatures <- out[['nfeatures']]
   
   for (i in 1:out[, max(nfeatures)]){
-    temp.formula <- rep(as.character(NA), nrow(out))  # initialise formula string
+    i.formula <- rep(as.character(NA), nrow(out))  # initialise formula string
+    i.mask <- (all.nfeatures >= i)
+    i.feature <- out[[paste0('feature_',i)]][i.mask]
+    i.lower <- out[[paste0('lower_bound_',i)]][i.mask]
+    i.upper <- out[[paste0('upper_bound_',i)]][i.mask]
+    i.missing <- out[[paste0('missing_',i)]][i.mask]
     
-    # Lower bound conditions
-    temp.mask_lower <- out[, nfeatures >= i & !is.infinite(get(paste0('lower_bound_',i)))]
-    temp.mask_lower[is.na(temp.mask_lower)] <- FALSE
-    temp.values_lower <- out[, paste0('(`',get(paste0('feature_',i)),'` >= ',get(paste0('lower_bound_',i)),')')]
-    temp.formula[temp.mask_lower] <- temp.values_lower[temp.mask_lower]
+    # Lower bound is infinite (x < upper_bound)
+    temp.mask <- is.infinite(i.lower)
+    temp.values <- paste0('(`',i.feature,'` < ',i.upper,')')
+    i.formula[i.mask][temp.mask] <- temp.values[temp.mask]
     
-    # Upper bound conditions
-    temp.mask_upper <- out[, nfeatures >= i & !is.infinite(get(paste0('upper_bound_',i)))]
-    temp.mask_upper[is.na(temp.mask_upper)] <- FALSE
-    temp.values_upper <- out[, paste0('(`',get(paste0('feature_',i)),'` < ',get(paste0('upper_bound_',i)),')')]
-    temp.formula[temp.mask_upper & !temp.mask_lower] <- temp.values_upper[temp.mask_upper & !temp.mask_lower]
-    temp.formula[temp.mask_upper & temp.mask_lower] <- paste0('(',temp.values_lower[temp.mask_upper & temp.mask_lower], ' * ',
-                                                              temp.values_upper[temp.mask_upper & temp.mask_lower],')')
-                                                             
-    # Add missing conditions
-    temp.mask_missing <- out[, nfeatures >= i & get(paste0('missing_',i))]
-    temp.mask_missing[is.na(temp.mask_missing)] <- FALSE
-    temp.values_missing <- out[, paste0('is.na(`',get(paste0('feature_',i)),'`)')]
-    temp.formula[temp.mask_missing] <- paste0('(',temp.formula[temp.mask_missing],' | ',temp.values_missing[temp.mask_missing],')')
+    # Upper bound is infinite (x >= lower_bound)
+    temp.mask <- is.infinite(i.upper)
+    temp.values <- paste0('(`',i.feature,'` >= ',i.lower,')')
+    i.formula[i.mask][temp.mask] <- temp.values[temp.mask]
     
-    temp.mask_no_missing <- out[, nfeatures >= i & !get(paste0('missing_',i))]
-    temp.mask_no_missing[is.na(temp.mask_no_missing)] <- FALSE
-    temp.values_no_missing <- out[, paste0('!is.na(`',get(paste0('feature_',i)),'`)')]
-    temp.formula[temp.mask_no_missing] <- paste0('(',temp.formula[temp.mask_no_missing],' & ',temp.values_no_missing[temp.mask_no_missing],')')
+    # Both upper and lower bound are non-infinite and lower < upper
+    temp.mask <- (!is.infinite(i.lower) & !is.infinite(i.upper) & i.lower < i.upper)
+    temp.values <- paste0('(`',i.feature,'` >= ',i.lower,' & `',i.feature,'` < ',i.upper,')')
+    i.formula[i.mask][temp.mask] <- temp.values[temp.mask]
+    
+    # Both upper and lower bound are non-infinite and upper <= lower (complement range)
+    temp.mask <- (!is.infinite(i.lower) & !is.infinite(i.upper) & i.upper <= i.lower)
+    temp.values <- paste0('(`',i.feature,'` < ',i.upper,' | `',i.feature,'` >= ',i.lower,')')
+    i.formula[i.mask][temp.mask] <- temp.values[temp.mask]
+    
+    # Add missing conditions (TRUE)
+    temp.mask <- i.missing
+    temp.values <- paste0('is.na(`',i.feature,'`)')
+    i.formula[i.mask][temp.mask] <- paste0('(',i.formula[i.mask][temp.mask],' | ',temp.values[temp.mask],')')
+    
+    # Add missing conditions (FALSE)
+    temp.mask <- !i.missing
+    temp.values <- paste0('!is.na(`',i.feature,'`)')
+    i.formula[i.mask][temp.mask] <- paste0('(',i.formula[i.mask][temp.mask],' & ',temp.values[temp.mask],')')
     
     # Set formula and combine formula across features
-    out[, (paste0('formula_',i)) := temp.formula]
+    out[, (paste0('formula_',i)) := i.formula]
     if (i == 1){
-      out[, formula := temp.formula]
+      out[, formula := i.formula]
     } else {
-      temp.mask <- out[, nfeatures >= i]
-      temp.values <- paste(out[temp.mask, formula],'*',temp.formula[temp.mask])
-      out[temp.mask, formula := temp.values]
+      temp.values <- paste(out[i.mask, formula],'*',i.formula[i.mask])
+      out[i.mask, formula := temp.values]
     }
   }
-  out[nfeatures == 0, formula := '1']  # formula for intercept
+  
+  # Formula for intercept
+  if (any(out[['nfeatures']] == 0)) out[nfeatures == 0, formula := '1']
   return(out)
 }

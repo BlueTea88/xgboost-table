@@ -26,167 +26,173 @@ treeNormalise <- function(in.conditions, in.data, in.weights = NULL){
   nmax <- in.conditions[, max(nfeatures)]
   if (nmax == 0) stop('No features were fitted.')
   cols.main <- c('nfeatures','parameter',paste0('feature_',1:nmax),paste0('lower_bound_',1:nmax),paste0('upper_bound_',1:nmax),paste0('missing_',1:nmax))
-
-  # Fitted interactions - get a list of vectors with each item containing the feature names of one interaction
-  int.index <- lapply(1:nrow(in.conditions), function(i){
-    temp <- sapply(1:nmax, function(j) in.conditions[[paste0('feature_',j)]][i])
-    return(sort(temp[!is.na(temp)]))
-  })
-  int.fitted <- unique(int.index)
-  int.fitted_parameters <- sapply(int.fitted, paste, collapse='*')
-  int.features <- sort(unique(unlist(int.fitted, use.names=F)))
-
-  # Pad out lower order interactions
-  int.all <- int.fitted
-  if (nmax > 1) for (i in (nmax-1):1){
-    int.lower <- lapply(int.fitted, function(x) ifelse(length(x) > i, combn(x, i, simplify=FALSE), 0))
-    int.lower <- unlist(int.lower, use.names=FALSE, recursive=FALSE)
-    int.lower <- int.lower[sapply(int.lower, function(x) !all(x == 0))]  # remove non-interactions
-    int.lower <- lapply(int.lower, function(x) sort(x))  # sort by feature name
-    int.lower <- unique(int.lower)  # remove duplicates
-    int.all <- unique(c(int.lower,int.all))  # combine with aggregate list
-  }
-  int.all_parameters <- sapply(int.all, paste, collapse='*')
   
-  # Pad out feature conditions, loop from highest dimension to lowest
-  xint.conditions <- list()  # list to store interaction conditions
-  length(xint.conditions) <- nmax
-  
-  for (xint.dim in nmax:1){
-    # Copy fitted model conditions
-    xint.conditions[[xint.dim]] <- in.conditions[nfeatures == xint.dim, cols.main, with=F]
-    if (xint.dim == nmax) next  # no need to pad out conditions for the highest interaction dimension
-    
-    # Pad out lower order effects from higher order conditions
-    temp.conditions <- lapply(1:(xint.dim+1), function(i){
-      temp <- copy(xint.conditions[[xint.dim + 1]])  # copy table of higher order conditions
-      temp[, paste0(c('feature_','lower_bound_','upper_bound_','missing_'), i) := NULL]
-      leftover <- setdiff(1:(xint.dim+1), i)  # remaining features
-      if (!identical(leftover,1:xint.dim)){  # rearrange the index of remaining features (1, 2, ...)
-        setnames(temp, paste0('feature_',leftover), paste0('feature_',1:xint.dim))
-        setnames(temp, paste0('lower_bound_',leftover), paste0('lower_bound_',1:xint.dim))
-        setnames(temp, paste0('upper_bound_',leftover), paste0('upper_bound_',1:xint.dim))
-        setnames(temp, paste0('missing_',leftover), paste0('missing_',1:xint.dim))
-      }
-      temp[, nfeatures := xint.dim]
-      temp.features <- lapply(1:xint.dim, function(i) temp[[paste0('feature_',i)]])
-      temp.features <- lapply(1:nrow(temp), function(i) sapply(temp.features, function(x) x[i]))
-      temp.parameters <- sapply(temp.features, function(x) paste(x, collapse='*'))
-      temp[, parameter := temp.parameters]
-      return(temp)
-    })
-    
-    # Combine conditions
-    xint.conditions[[xint.dim]] <- rbindlist(c(list(xint.conditions[[xint.dim]]),temp.conditions), use.names=TRUE, fill=TRUE)
-  }
-  out <- rbindlist(xint.conditions, use.names=TRUE, fill=TRUE)  # aggregate all conditions
-  
-  # Remove duplicates
-  setkey(out, NULL)
-  out <- unique(out)  # remove duplicates
-  
-  # Attach formula columns
-  out <- treeFormula(out)
+  # Initialise output
+  out <- copy(in.conditions)
+  out[, exposure := as.numeric(NA)]
+  out[, new:=TRUE]  # indicates a new model term
   
   # Add intercept if required
-  if (all(out[, nfeatures != 0])){
-    temp <- data.table(nfeatures = 0, parameter = '(intercept)', formula = 1) 
+  if (all(out[['nfeatures']] != 0)){
+    temp <- data.table(nfeatures = 0, parameter = '(intercept)', formula = 1, value = 0, exposure = 1, new = FALSE)
     out <- rbindlist(list(out, temp), use.names=TRUE, fill=TRUE)
   }
   
-  # Attach exposure
-  exp.weights <- rep(0, nrow(out))
-  exp.formula <- out[, formula]
-  
-  # Loop across conditions and attach exposure for each condition
-  temp <- mclapply(1:nrow(out), function(i){
-    xint.formula <- exp.formula[i]
-    xint.mask <- with(in.data, eval(parse(text=xint.formula)))
-    if (xint.formula == '1') xint.mask <- rep(1, nrow(in.data))
-    temp.out <- sum(in.weights*xint.mask, na.rm=T)
-    return(temp.out)
-  })
-  exp.weights <- unlist(temp, use.names=F)
-  out[, exposure := exp.weights/sum(in.weights)]
-  
-  # Attach values from in.conditions
-  out <- merge(out, in.conditions[, c(cols.main,'value'), with=F], by=cols.main, all.x=TRUE)
-  out[is.na(value), value:=0]
-  
-  # Normalise table
-  out[, (paste0('complement_',c(1:nmax))) := FALSE]  # initialise complement indicator
-  all.formula <- out[['formula']]
-  all.nfeatures <- out[['nfeatures']]
-  
-  for (xint.dim in nmax:1){
-    # Process terms from highest to lowest order
-    temp.terms_idx <- out[nfeatures == xint.dim & exposure != 0, which=TRUE] # extract terms to process
-    temp.idx0 <- which(all.nfeatures == (xint.dim-1))  # index of lower order terms
+  # Process terms from highest to lowest interaction order
+  for (idim in nmax:1){  # interaction parameter order
+  for (jdim in idim:1){  # j-th feature of the term
+    # Prepare new terms
+    if (out[, any(get('new'))]){
+      new_terms <- out[get('new')]
+      new_nmax <- new_terms[, max(nfeatures)]
+      existing_formula <- out[['formula']]  # all existing formula
+      
+      # Pad out lower order conditions
+      if (new_nmax > 1) for (xdim in new_nmax:2){
+        pad_new <- new_terms[nfeatures == xdim]
+        pad_new[, `:=`(value = 0, exposure = as.numeric(NA))]  # set value and exposure for new padded out terms
+        if (nrow(pad_new) == 0) next
+        
+        # Remove each feature from the terms once to pad out lower order conditions
+        pad_current <- lapply(1:(xdim), function(i){
+          temp <- copy(pad_new)
+          temp[, paste0(c('feature_','lower_bound_','upper_bound_','missing_','formula_'), i) := NULL]
+          leftover <- setdiff(1:xdim, i)  # remaining features
+          if (!identical(leftover,1:(xdim - 1))){  # rearrange the index of remaining features (1, 2, ...)
+            setnames(temp, paste0('feature_',leftover), paste0('feature_',1:(xdim - 1)))
+            setnames(temp, paste0('lower_bound_',leftover), paste0('lower_bound_',1:(xdim - 1)))
+            setnames(temp, paste0('upper_bound_',leftover), paste0('upper_bound_',1:(xdim - 1)))
+            setnames(temp, paste0('missing_',leftover), paste0('missing_',1:(xdim - 1)))
+          }
+          temp[, nfeatures := (xdim-1)]
+          temp.features <- lapply(1:(xdim-1), function(i) temp[[paste0('feature_',i)]])
+          temp.features <- lapply(1:nrow(temp), function(i) sapply(temp.features, function(x) x[i]))
+          temp.parameters <- sapply(temp.features, function(x) paste(x, collapse='*'))
+          temp[, parameter := temp.parameters]  # set parameter
+          temp <- treeFormula(temp)  # set formula
+          return(temp)
+        })
+        
+        # Combine and remove duplicates
+        pad_current <- rbindlist(pad_current, use.names=TRUE, fill=TRUE)
+        pad_duplicates <- duplicated(pad_current[['formula']])
+        pad_current <- pad_current[!pad_duplicates]
+        
+        # Remove conditions that already exist
+        idx <- which(!pad_current[['formula']] %in% existing_formula)
+        pad_current <- pad_current[idx]
+        
+        # Append to new terms
+        if (nrow(pad_current) > 0){
+          new_terms <- rbindlist(list(new_terms, pad_current), use.names=TRUE, fill=TRUE)
+          out <- rbindlist(list(out, pad_current), use.names=TRUE, fill=TRUE)
+        }
+      }  # end padding out lower order conditions
+      
+      # Attach exposure to all new terms that have unprocessed (NA) exposure
+      if (any(is.na(new_terms[['exposure']]))){
+        # Gather index and formula of rows to process
+        exp_idx <- which(is.na(new_terms[['exposure']]))
+        exp_formula <- new_terms[['formula']][exp_idx]
+        
+        # Loop across each formula to process
+        temp <- mclapply(1:length(exp_formula), function(i){
+          xmask <- with(in.data, eval(parse(text=exp_formula[i])))
+          if (exp_formula[i] == '1') xmask <- rep(1, nrow(in.data))  # intercept formula
+          xout <- sum(in.weights * xmask, na.rm=T)
+          return(xout)
+        })
+        
+        # Update exposure
+        exp_weights <- unlist(temp, use.names=F)
+        new_terms[['exposure']][exp_idx] <- exp_weights/sum(in.weights)
+      }  # end attach exposure
+      
+      # Append processed new terms
+      new_terms[, new := FALSE]  # update new term indicator
+      out <- rbindlist(list(out[!get('new')], new_terms), use.names=TRUE, fill=TRUE)
+    }  # end new terms processing
+    
+    # Gather data to normalise table
+    all.formula <- out[['formula']]
+    all.nfeatures <- out[['nfeatures']]
+    terms_idx <- out[nfeatures == idim & round(exposure,15) > 0, which=TRUE]  # index of terms to process
+    terms_idx0 <- which(all.nfeatures == (idim - 1))  # index of all lower order terms
+    terms_idx1 <- which(all.nfeatures == idim)  # index of all current order terms
     
     # Calculate normalisation adjustments
-    norm.adjustments <- mclapply(temp.terms_idx, function(i){
+    norm.adjustments <- mclapply(terms_idx, function(i){
       # Initialise output
-      temp.out <- list(adj.index = rep(0, xint.dim), adj.values = rep(0, xint.dim), complements = list())
+      xout <- list()
       
       # Extract current row values for faster processing
       current.row <- out[i]
       current.value <- current.row[['value']]
       current.exposure <- current.row[['exposure']]
-      current.formula <- unlist(as.list(current.row)[paste0('formula_',1:xint.dim)])
+      current.formula <- unlist(as.list(current.row)[paste0('formula_',1:idim)])
       
-      # Remove one feature to merge to lower order conditions
-      for (k in 1:xint.dim){
-        # Index of lower order term
-        if (xint.dim > 1){
-          temp.formula <- paste(current.formula[setdiff(1:xint.dim, k)], collapse = ' * ')
-          temp.idx <- temp.idx0[all.formula[temp.idx0] == temp.formula]
-          if (length(temp.idx) != 1) stop('Problem matching lower order terms.')
-        } else {
-          temp.idx <- out[nfeatures == 0, which=TRUE]
-        }
-        
-        # Get exposure of lower order condition 
-        temp.exposure <- out[['exposure']][temp.idx]
-        
-        # Adjustment
-        temp.adj <- current.value * current.exposure/temp.exposure
-        current.value <- current.value - temp.adj
-        
-        # Create row for complement
-        temp.formula <- copy(current.formula)
-        temp.formula[k] <- paste0('(!',current.formula[k],')')
-        temp.complement <- copy(current.row)
-        temp.complement[['value']] <- -temp.adj
-        temp.complement[['exposure']] <- temp.exposure - current.exposure
-        temp.complement[[paste0('complement_',k)]] <- TRUE
-        temp.complement[[paste0('formula_',k)]] <- temp.formula[k]
-        temp.complement[['formula']] <- paste(temp.formula, collapse = ' * ')
-        
-        # Update output list
-        temp.out[['adj.index']][k] <- temp.idx
-        temp.out[['adj.values']][k] <- temp.adj
-        temp.out[['complements']][[length(temp.out$complements) + 1]] <- temp.complement
+      # Remove j-th feature to merge to lower order conditions
+      if (idim > 1){
+        temp.formula <- paste(current.formula[setdiff(1:idim, jdim)], collapse = ' * ')
+        xout[['adj.index']] <- terms_idx0[all.formula[terms_idx0] == temp.formula]
+        if (length(xout$adj.index) != 1) stop('Problem matching lower order terms.')
+      } else {
+        xout[['adj.index']] <- out[nfeatures == 0, which=TRUE]
       }
-      temp.out[['complements']] <- rbindlist(temp.out$complements, use.names=TRUE)
-      temp.out[['value']] <- current.value
-      return(temp.out)
-    })
+      
+      # Get exposure of lower order condition
+      temp.exposure <- out[['exposure']][xout$adj.index]
+      
+      # Adjustment
+      xout[['adj']] <- current.value * current.exposure/temp.exposure
+      xout[['value']] <- current.value - xout$adj  # new value
+      
+      # Create row for complement
+      temp.complement <- copy(current.row)
+      temp.complement[['new']] <- TRUE
+      temp.complement[['value']] <- -xout$adj
+      temp.complement[['exposure']] <- temp.exposure - current.exposure
+      temp.complement[[paste0('lower_bound_',jdim)]] <- current.row[[paste0('upper_bound_',jdim)]]
+      temp.complement[[paste0('upper_bound_',jdim)]] <- current.row[[paste0('lower_bound_',jdim)]]
+      temp.complement[[paste0('missing_',jdim)]] <- !current.row[[paste0('missing_',jdim)]]
+      temp.complement <- treeFormula(temp.complement)
+      
+      # Check if complement condition already exists - just need to add adjustment to existing row
+      temp.complement_idx <- terms_idx1[all.formula[terms_idx1] == temp.complement[['formula']]]
+      
+      if (length(temp.complement_idx) == 0){
+        # If complement condition does not exist, need to return a new row to add
+        xout[['complement']] <- temp.complement
+      } else if (length(temp.complement_idx) == 1){
+        # If complement condition already exists, return index of existing row and required adjustment
+        xout[['adj.index']] <- c(xout$adj.index, temp.complement_idx)
+        xout[['adj']] <- c(xout$adj, -xout$adj)
+      } else {
+        # If more than one match, there is a duplicate error in the table
+        stop('Duplicate complement conditions already exist.')
+      }
+      return(xout)
+    })  # end calculate normalisation adjustments
     
     # Update current values
     norm.values <- sapply(norm.adjustments, function(x) x$value)
-    out[['value']][temp.terms_idx] <- norm.values
+    out[['value']][terms_idx] <- norm.values
     
-    # Update lower order conditions with adjustments
-    norm.adj <- lapply(norm.adjustments, function(x) data.table(index=x$adj.index, adjustment=x$adj.value))
+    # Update other conditions with adjustments
+    norm.adj <- lapply(norm.adjustments, function(x) data.table(index=x$adj.index, adjustment=x$adj))
     norm.adj <- rbindlist(norm.adj, use.names=TRUE)
     norm.adj <- norm.adj[, .(adjustment = sum(adjustment)), by='index']
-    out[['value']][norm.adj[, index]] <- out[['value']][norm.adj[, index]] + norm.adj[, adjustment]
+    out[['value']][norm.adj[['index']]] <- out[['value']][norm.adj[['index']]] + norm.adj[['adjustment']]
     
-    # Add complement rows
-    norm.complements <- rbindlist(lapply(norm.adjustments, function(x) x$complements), use.names=TRUE)
-    out <- rbindlist(list(out, norm.complements), use.names=TRUE)
-  }  # end normalisation loop
+    # Add new complement rows if required
+    norm.complements <- lapply(norm.adjustments, function(x) x$complement)
+    norm.complements <- norm.complements[sapply(norm.complements, function(x) !is.null(x))]  # remove NULL entries
+    if (length(norm.complements) > 0){
+      out <- rbindlist(c(list(out),norm.complements), use.names=TRUE, fill=TRUE)
+    }
+  }}
   
   # Return output table
+  setorderv(out, c('nfeatures','parameter','formula'))
   return(out)
 }
