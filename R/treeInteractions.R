@@ -13,6 +13,7 @@
 #' @return
 #' Returns a list of vectors where each item of the list contains the feature names of one interaction.
 #'
+#' @import data.table
 #' @export
 treeInteractions <- function(in.tree, in.depth){
   tree <- copy(in.tree)

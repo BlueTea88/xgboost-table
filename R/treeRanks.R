@@ -10,6 +10,8 @@
 #' @return
 #' A table of parameters and their associated importance score.
 #'
+#' @import data.table
+#' @import parallel
 #' @export
 treeRanks <- function(in.conditions, in.data, in.weights = NULL){
   # Convert input data to data.table if necessary

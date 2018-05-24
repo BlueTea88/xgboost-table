@@ -7,7 +7,7 @@ alongside individual feature contributions.
 
 ``` r
 # Install from github using devtools:
-devtools::install_github("https://github.com/BlueTea88/xgboostcon")
+devtools::install_github("BlueTea88/xgboostcon")
 ```
 
 ## Overview

@@ -18,7 +18,8 @@ bst <- xgboost(data = train,
                label = y,
                max_depth = 4,
                eta = 0.1,
-               nrounds = 2000)
+               nrounds = 200,
+               verbose = 0)
 
 # Extract tree conditions and rank
 bst.tree <- xgb.model.dt.tree(feature_names = colnames(train), model = bst)

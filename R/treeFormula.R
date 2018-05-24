@@ -12,6 +12,7 @@
 #'   \item \code{formula_i}: string formula for the i-th feature
 #' }
 #'
+#' @import data.table
 #' @export
 treeFormula <- function(in.conditions){
   # Create formula

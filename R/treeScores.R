@@ -9,6 +9,8 @@
 #' @details
 #' Calculate scores from a conditions table.  Useful for reconciling with the original XGBoost model.
 #'
+#' @import data.table
+#' @import parallel
 #' @export
 treeScores <- function(in.conditions, in.data){
   # Convert input data to data.table if necessary

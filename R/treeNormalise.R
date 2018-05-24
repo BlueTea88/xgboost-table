@@ -11,6 +11,8 @@
 #' Normalise tree conditions by padding out lower order effects and setting the values of lower order conditions based
 #'   on the weighted mean.  The distribution of features is obtained from \code{in.data} and \code{in.weights}.
 #'
+#' @import data.table
+#' @import parallel
 #' @export
 treeNormalise <- function(in.conditions, in.data, in.weights = NULL){
   # Convert input data to data.table if necessary

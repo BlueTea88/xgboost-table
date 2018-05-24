@@ -13,6 +13,7 @@
 #' @return
 #' Returns a table of tree conditions.
 #'
+#' @import data.table
 #' @export
 treeConditions <- function(in.tree, split.digits = 11){
   # Prepare tree - convert Yes, No and Missing to integers
