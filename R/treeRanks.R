@@ -8,7 +8,7 @@
 #' @param in.weights vector of weights corresponding to each observation of \code{in.data}, defaults to a vector of 1s
 #'
 #' @return
-#' A table of parameters and their associated score.
+#' A table of parameters and their associated importance score.
 #'
 #' @export
 treeRanks <- function(in.conditions, in.data, in.weights = NULL){

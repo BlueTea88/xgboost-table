@@ -1,12 +1,9 @@
 
 # Simple example of converting an XGBoost model into a table and ranking main effects and interactions
-
-# Load libraries and codes
-library(xgboost)
+# Load libraries
 library(data.table)
-source('D:/GitHub/xgboost-table/R/treeInteractions.R')
-source('D:/GitHub/xgboost-table/R/treeConditions.R')
-
+library(xgboost)
+library(xgboostcon)
 
 # Generate sample data
 set.seed(1024)
@@ -23,20 +20,10 @@ bst <- xgboost(data = train,
                eta = 0.1,
                nrounds = 2000)
 
-# Extract tree conditions
-bst.tree <- xgb.model.dt.tree(model=bst)
+# Extract tree conditions and rank
+bst.tree <- xgb.model.dt.tree(feature_names = colnames(train), model = bst)
 bst.conditions <- treeConditions(bst.tree)
+bst.norm <- treeNormalise(bst.conditions, x, rep(1:nrow(x)))
+bst.ranks <- treeRanks(bst.norm, x, rep(1:nrow(x)))
+print(head(bst.ranks))
 
-# Test lower order parameters
-in.conditions <- copy(bst.conditions)
-in.data <- copy(x)
-
-time <- Sys.time()
-test <- treeConditions(bst.tree)
-print(Sys.time() - time)
-
-
-Rprof('D:/GitHub/xgboost-table/test.out', line.profiling=TRUE)
-test2 <- treeConditions(bst.tree)
-Rprof(NULL)
-summaryRprof('D:/GitHub/xgboost-table/test_treeConditions.out', lines='show')
