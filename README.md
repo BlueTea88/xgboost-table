@@ -42,4 +42,6 @@ See the vignette below for a quick example:
 
 * Extracted conditions does not include the original base score so the intercept value is not accurate.
 * Input data needs to be converted in the form of a data.table.
-* Trees can be extracted from a model 
+* Trees can be extracted from an XGBoost model using xgb.model.dt.tree, extracted trees must have column names.
+* Can be slow if the model had a high max_depth (greater than 3) or has a large number of trees.
+* If early_stopping_rounds is used, should use only the trees up to best_ntreelimit
