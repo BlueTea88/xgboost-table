@@ -9,8 +9,6 @@
 #' @details
 #' Calculate scores from a conditions table.  Useful for reconciling with the original XGBoost model.
 #'
-#' @import data.table
-#' @import parallel
 #' @export
 treeScores <- function(in.conditions, in.data){
   # Convert input data to data.table if necessary
@@ -40,7 +38,7 @@ treeScoresPar <- function(in.conditions, in.data){
   if (class(in.data)[1] == 'matrix') in.data <- as.data.table(in.data)
   
   # Split dataset for parallel processing
-  nsplits <- min(getOption('mc.cores', 2L), nrow(in.data))
+  nsplits <- min(getOption('mc.cores', 1L), nrow(in.data))
   splits.idx <- sample(1:nsplits, nrow(in.data), replace=TRUE)
   splits.data <- split(in.data, splits.idx)
   splits.mapping <- lapply(1:nsplits, function(i) which(splits.idx == i))
