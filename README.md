@@ -1,4 +1,4 @@
-# xgboostcon
+# xgboost_conditions
 
 R functions to extract tree conditions from an XGBoost model and rank the importance of interactions 
 alongside individual feature contributions.
