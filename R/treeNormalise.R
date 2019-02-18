@@ -11,8 +11,6 @@
 #' Normalise tree conditions by padding out lower order effects and setting the values of lower order conditions based
 #'   on the weighted mean.  The distribution of features is obtained from \code{in.data} and \code{in.weights}.
 #'
-#' @import data.table
-#' @import parallel
 #' @export
 treeNormalise <- function(in.conditions, in.data, in.weights = NULL){
   # Convert input data to data.table if necessary
@@ -39,6 +37,12 @@ treeNormalise <- function(in.conditions, in.data, in.weights = NULL){
     temp <- data.table(nfeatures = 0, parameter = '(intercept)', formula = 1, value = 0, exposure = 1, new = FALSE)
     out <- rbindlist(list(out, temp), use.names=TRUE, fill=TRUE)
   }
+  
+  # Split data for parallel processing
+  nsplits <- min(getOption('mc.cores', 1L), nrow(in.data))
+  splits.idx <- sample(1:nsplits, nrow(in.data), replace=TRUE)
+  splits.data <- split(in.data, splits.idx)
+  splits.weight <- lapply(1:nsplits, function(i) in.weights[splits.idx == i])
   
   # Process terms from highest to lowest interaction order
   for (idim in nmax:1){  # interaction parameter order
@@ -97,16 +101,22 @@ treeNormalise <- function(in.conditions, in.data, in.weights = NULL){
         exp_idx <- which(is.na(new_terms[['exposure']]))
         exp_formula <- new_terms[['formula']][exp_idx]
         
-        # Loop across each formula to process
-        temp <- mclapply(1:length(exp_formula), function(i){
-          xmask <- with(in.data, eval(parse(text=exp_formula[i])))
-          if (exp_formula[i] == '1') xmask <- rep(1, nrow(in.data))  # intercept formula
-          xout <- sum(in.weights * xmask, na.rm=T)
-          return(xout)
+        # Get exposure in parallel
+        temp <- mclapply(1:nsplits, function(i){
+          # Loop across formula
+          temp.weights <- sapply(1:length(exp_formula), function(j){
+            xmask <- with(splits.data[[i]], eval(parse(text=exp_formula[j])))
+            if (exp_formula[j] == '1') xmask <- rep(1, nrow(splits.data[[i]]))  # intercept formula
+            xout <- sum(splits.weight[[i]] * xmask, na.rm=T)
+            return(xout)
+          })
+          return(temp.weights)
         })
         
+        # Combine weights across parallel runs
+        exp_weights <- Reduce('+', temp)
+        
         # Update exposure
-        exp_weights <- unlist(temp, use.names=F)
         new_terms[['exposure']][exp_idx] <- exp_weights/sum(in.weights)
       }  # end attach exposure
       

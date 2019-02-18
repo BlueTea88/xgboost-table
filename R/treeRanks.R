@@ -8,10 +8,8 @@
 #' @param in.weights vector of weights corresponding to each observation of \code{in.data}, defaults to a vector of 1s
 #'
 #' @return
-#' A table of parameters and their associated importance score.
+#' A table of parameters and their associated score.
 #'
-#' @import data.table
-#' @import parallel
 #' @export
 treeRanks <- function(in.conditions, in.data, in.weights = NULL){
   # Convert input data to data.table if necessary
@@ -27,14 +25,26 @@ treeRanks <- function(in.conditions, in.data, in.weights = NULL){
   # Get a list of parameters
   params <- unique(all.params)
   
-  # Loop across each parameter and calculate the weighted average scores
-  params.scores <- mclapply(params, function(x){
-    temp.con <- in.conditions[parameter == x]
-    temp.scores <- treeScores(temp.con, in.data)
-    temp.scores_wabs <- sum(abs(temp.scores)*in.weights)
-    return(temp.scores_wabs)
-  }, mc.preschedule = FALSE)
-  params.scores <- unlist(params.scores, use.names=F)
+  # Split data for parallel processing
+  nsplits <- min(getOption('mc.cores', 1L), nrow(in.data))
+  splits.idx <- sample(1:nsplits, nrow(in.data), replace=TRUE)
+  splits.data <- split(in.data, splits.idx)
+  splits.weight <- lapply(1:nsplits, function(i) in.weights[splits.idx == i])
+  
+  # Process data in parallel
+  splits.scores <- mclapply(1:nsplits, function(i){
+    # Loop across each parameter and calculate the weighted average scores
+    p.scores <- sapply(params, function(p){
+      temp.con <- in.conditions[parameter == p]
+      temp.scores <- treeScores(temp.con, splits.data[[i]])
+      temp.scores_wabs <- sum(abs(temp.scores)*splits.weight[[i]])
+      return(temp.scores_wabs)
+    })
+    return(p.scores)
+  })
+  
+  # Sum across parallel runs
+  params.scores <- Reduce('+', splits.scores)
   
   # Get number of features for each parameter
   params.nfeatures <- sapply(params, function(x) all.nfeatures[all.params == x][1])
